@@ -1,0 +1,198 @@
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IoT Monitoring Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f3f6fb;
+            color: #1f2937;
+            margin: 0;
+            padding: 30px;
+        }
+        .container {
+            max-width: 1100px;
+            margin: auto;
+        }
+        h1 { margin-bottom: 8px; }
+        .subtitle { color: #64748b; }
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin: 24px 0;
+        }
+        .card, .panel {
+            background: white;
+            padding: 22px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px #0000000a;
+        }
+        .value {
+            font-size: 30px;
+            font-weight: bold;
+            margin-top: 12px;
+        }
+        .panel { margin-bottom: 20px; }
+        .chart-box { height: 300px; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            text-align: left;
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        th { background: #f8fafc; }
+        .table-wrap { overflow-x: auto; }
+        .status { color: #15803d; }
+        @media (max-width: 650px) {
+            .cards { grid-template-columns: 1fr; }
+            body { padding: 15px; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>IoT Monitoring Dashboard</h1>
+    <p class="subtitle">
+        Real-time Sensor Monitoring |
+        Server: {{ server_id }}
+    </p>
+    <p id="status">Đang tải dữ liệu...</p>
+
+    <div class="cards">
+        <div class="card">
+            <div>Số thiết bị</div>
+            <div class="value" id="devices">0</div>
+        </div>
+        <div class="card">
+            <div>Nhiệt độ mới nhất</div>
+            <div class="value" id="temperature">--</div>
+        </div>
+        <div class="card">
+            <div>Độ ẩm mới nhất</div>
+            <div class="value" id="humidity">--</div>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Biểu đồ dữ liệu cảm biến</h2>
+        <div class="chart-box">
+            <canvas id="sensorChart"></canvas>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Dữ liệu gần nhất</h2>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Thiết bị</th>
+                        <th>Nhiệt độ</th>
+                        <th>Độ ẩm</th>
+                        <th>Thời gian</th>
+                    </tr>
+                </thead>
+                <tbody id="dataTable"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+const chart = new Chart(
+    document.getElementById("sensorChart"),
+    {
+        type: "line",
+        data: {
+            labels: [],
+            datasets: [
+                {
+                    label: "Nhiệt độ (°C)",
+                    data: [],
+                    borderColor: "#ef4444",
+                    tension: 0.3
+                },
+                {
+                    label: "Độ ẩm (%)",
+                    data: [],
+                    borderColor: "#2563eb",
+                    tension: 0.3
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: { beginAtZero: false }
+            }
+        }
+    }
+);
+
+async function updateDashboard() {
+    try {
+        const response = await fetch("/api/readings/latest");
+        if (!response.ok) throw new Error("API error");
+
+        const readings = await response.json();
+        const devices = new Set(readings.map(r => r.device_id));
+
+        document.getElementById("devices").textContent = devices.size;
+
+        if (readings.length > 0) {
+            const latest = readings[readings.length - 1];
+
+            document.getElementById("temperature").textContent =
+                latest.temperature + " °C";
+
+            document.getElementById("humidity").textContent =
+                latest.humidity + " %";
+        }
+
+        chart.data.labels = readings.map(r =>
+            r.created_at.split("T")[1]
+        );
+        chart.data.datasets[0].data =
+            readings.map(r => r.temperature);
+        chart.data.datasets[1].data =
+            readings.map(r => r.humidity);
+        chart.update();
+
+        const table = document.getElementById("dataTable");
+        table.replaceChildren();
+
+        [...readings].reverse().forEach(r => {
+            const tr = document.createElement("tr");
+            [r.device_id, r.temperature, r.humidity, r.created_at]
+                .forEach(value => {
+                    const td = document.createElement("td");
+                    td.textContent = value;
+                    tr.appendChild(td);
+                });
+            table.appendChild(tr);
+        });
+
+        document.getElementById("status").textContent =
+            "Đang hoạt động - tự cập nhật mỗi 2 giây";
+        document.getElementById("status").className = "status";
+
+    } catch (error) {
+        document.getElementById("status").textContent =
+            "Không thể lấy dữ liệu từ API";
+    }
+}
+
+updateDashboard();
+setInterval(updateDashboard, 2000);
+</script>
+</body>
+</html>
