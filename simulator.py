@@ -1,4 +1,3 @@
-
 import argparse
 import csv
 import random
@@ -16,6 +15,7 @@ parser.add_argument("--devices", type=int, default=5)
 parser.add_argument("--interval", type=float, default=2)
 parser.add_argument("--duration", type=float, default=60)
 parser.add_argument("--three-levels", action="store_true")
+parser.add_argument("--emergency", action="store_true", help="Send high temperature emergency alerts")
 args = parser.parse_args()
 
 if args.devices < 1 or args.interval <= 0 or args.duration <= 0:
@@ -41,7 +41,7 @@ levels = (
         ("high", 100, 0.5, 60),
     ]
     if args.three_levels
-    else [("custom", args.devices, args.interval, args.duration)]
+    else [("emergency" if args.emergency else "custom", args.devices, args.interval, args.duration)]
 )
 
 DETAIL_FIELDS = [
@@ -59,9 +59,14 @@ SUMMARY_FIELDS = [
 
 
 def send_reading(level, device_id):
+    temp = (
+        round(random.uniform(75, 95), 1)
+        if args.emergency
+        else round(random.uniform(25, 35), 1)
+    )
     payload = {
         "device_id": f"sensor_{device_id:03d}",
-        "temperature": round(random.uniform(25, 35), 1),
+        "temperature": temp,
         "humidity": round(random.uniform(40, 80), 1),
     }
 
@@ -166,7 +171,6 @@ def run_level(level, devices, interval, duration):
             if next_send < time.monotonic():
                 next_send = time.monotonic() + interval
 
-        # Wait briefly for outstanding requests.
         drain_deadline = time.monotonic() + DRAIN_SECONDS
 
         while pending and time.monotonic() < drain_deadline:
@@ -183,7 +187,6 @@ def run_level(level, devices, interval, duration):
         raise
 
     finally:
-        # Do not block on unfinished requests.
         executor.shutdown(wait=False, cancel_futures=True)
 
         elapsed = time.monotonic() - start
