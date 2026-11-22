@@ -19,41 +19,66 @@ AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-2")
 HIGH_QUEUE_URL = os.getenv("HIGH_QUEUE_URL")
 NORMAL_QUEUE_URL = os.getenv("NORMAL_QUEUE_URL")
 TEMP_THRESHOLD = float(os.getenv("TEMP_THRESHOLD", "60.0"))
+HUM_THRESHOLD = float(os.getenv("HUM_THRESHOLD", "85.0"))
 
 sqs_client = boto3.client("sqs", region_name=AWS_REGION)
 
-# Lưu cửa sổ trượt 20 giá trị nhiệt độ gần nhất của từng thiết bị để tính Z-Score
-device_history = defaultdict(lambda: deque(maxlen=20))
+# Lưu cửa sổ trượt 20 giá trị gần nhất của Nhiệt độ và Độ ẩm theo từng thiết bị
+temp_history = defaultdict(lambda: deque(maxlen=20))
+hum_history = defaultdict(lambda: deque(maxlen=20))
 
 
-def detect_anomaly(device_id, temp):
-    """Phát hiện bất thường kết hợp Ngưỡng tĩnh và Z-Score động."""
-    history = device_history[device_id]
+def detect_anomaly(device_id, temp, hum):
+    """Phát hiện bất thường đa biến (Nhiệt độ & Độ ẩm) kết hợp Ngưỡng tĩnh và Z-Score động."""
+    t_hist = temp_history[device_id]
+    h_hist = hum_history[device_id]
+
     is_anomaly = False
-    reason = "Normal"
-    z_score = 0.0
+    reasons = []
+    temp_z = 0.0
+    hum_z = 0.0
 
-    # 1. Kiểm tra ngưỡng nguy hiểm tuyệt đối
+    # --- 1. KIỂM TRA NHIỆT ĐỘ ---
     if temp >= TEMP_THRESHOLD:
         is_anomaly = True
-        reason = f"Vượt ngưỡng an toàn tuyệt đối ({temp}°C >= {TEMP_THRESHOLD}°C)"
-
-    # 2. Kiểm tra đột biến thống kê (Z-Score) khi đã có đủ ít nhất 5 mẫu dữ liệu
-    elif len(history) >= 5:
-        mean_val = statistics.mean(history)
-        stdev_val = statistics.pstdev(history)
-        if stdev_val > 0.1:  # Tránh chia cho 0 khi nhiệt độ đi ngang tuyệt đối
-            z_score = (temp - mean_val) / stdev_val
-            if abs(z_score) >= 3.0:
+        reasons.append(f"Nhiệt độ vượt ngưỡng an toàn ({temp}°C >= {TEMP_THRESHOLD}°C)")
+    elif len(t_hist) >= 5:
+        mean_t = statistics.mean(t_hist)
+        stdev_t = statistics.pstdev(t_hist)
+        if stdev_t > 0.1:
+            temp_z = (temp - mean_t) / stdev_t
+            if abs(temp_z) >= 3.0:
                 is_anomaly = True
-                reason = (
-                    f"Biến động nhiệt độ bất thường (Z-Score = {z_score:.2f}, "
-                    f"trung bình trước đó {mean_val:.1f}°C -> hiện tại {temp}°C)"
+                reasons.append(
+                    f"Biến động nhiệt độ bất thường (Z-Score = {temp_z:.2f}, "
+                    f"trung bình trước đó {mean_t:.1f}°C -> hiện tại {temp}°C)"
+                )
+
+    # --- 2. KIỂM TRA ĐỘ ẨM ---
+    if hum >= HUM_THRESHOLD:
+        is_anomaly = True
+        reasons.append(f"Độ ẩm vượt ngưỡng an toàn ({hum}% >= {HUM_THRESHOLD}%)")
+    elif len(h_hist) >= 5:
+        mean_h = statistics.mean(h_hist)
+        stdev_h = statistics.pstdev(h_hist)
+        if stdev_h > 0.5:
+            hum_z = (hum - mean_h) / stdev_h
+            if abs(hum_z) >= 3.0:
+                is_anomaly = True
+                reasons.append(
+                    f"Biến động độ ẩm bất thường (Z-Score = {hum_z:.2f}, "
+                    f"trung bình trước đó {mean_h:.1f}% -> hiện tại {hum}%)"
                 )
 
     # Cập nhật giá trị mới vào lịch sử trượt
-    history.append(temp)
-    return is_anomaly, reason, round(z_score, 2)
+    t_hist.append(temp)
+    h_hist.append(hum)
+
+    # Lấy Z-Score có độ lệch lớn nhất để lưu log
+    max_z = temp_z if abs(temp_z) >= abs(hum_z) else hum_z
+    reason_str = "; ".join(reasons) if reasons else "Normal"
+
+    return is_anomaly, reason_str, round(max_z, 2)
 
 
 @app.route("/health", methods=["GET"])
@@ -85,14 +110,15 @@ def add_reading():
 
     device_id = data["device_id"]
     temp = float(data["temperature"])
+    hum = float(data["humidity"])
 
-    # Chạy bộ phát hiện bất thường AI/Thống kê
-    is_anomaly, anomaly_reason, z_score = detect_anomaly(device_id, temp)
+   
+    is_anomaly, anomaly_reason, z_score = detect_anomaly(device_id, temp, hum)
 
     reading = {
         "device_id": device_id,
         "temperature": temp,
-        "humidity": data["humidity"],
+        "humidity": hum,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "anomaly_reason": anomaly_reason,
         "z_score": z_score
